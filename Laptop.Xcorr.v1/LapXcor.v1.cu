@@ -9,8 +9,7 @@
 #include <cstdio>
 #include <cassert>
 #include <cuda_runtime.h>
-#include <helper_cuda.h>
-#include <helper_functions.h>  
+ 
 
 #define THREADS 512
 //#define Gy 32 //grid y dimension
@@ -25,13 +24,13 @@ typedef struct{
 
 
 typedef struct{
-	int win;
+	unsigned int win;
 	float sDev;
 	} pixelLoc;
 
 typedef struct{
-	int loc_Wind1;
-	int loc_Wind2;
+	unsigned int loc_Wind1;
+	unsigned int loc_Wind2;
 	float loc_corrCoef;
 	} PixelxCor;
 
@@ -43,7 +42,7 @@ int const Xt = 512; //thread x dimension
 int const Yt = 1; //32//thread y dimension
 int const Fx = 2000; //number of frames
 int const h_Wsize = 50;
-
+int const devThres = 15;
 
 using namespace std;
 
@@ -111,31 +110,32 @@ using namespace std;
 //this where thread acts on the same window to Xcorr
 __global__ void XcrossCUDA_same(int* d_Pixels, pixelLoc* d_PL, PixelxCor* d_Cor, int X, int corCount, int Wsize)
 	{
-	__shared__ int window[h_Wsize];
+	__shared__  int window[h_Wsize];
+	//__shared__ 
 	//here d_Cor is on Host not Device
-	int xIdx = blockIdx.x * blockDim.x + threadIdx.x;
-
-	float x1, x2, SumPt2, Sum_X1X2,sdev1,sdev2;
-	int winStart, window1,window2, Index,temp2,temp3; //change yIdx and xIdx
+	unsigned int xIdx = blockIdx.x * blockDim.x + threadIdx.x;
+	float sdev1;
+	float x1, x2, SumPt2, Sum_X1X2, sdev2;
+	unsigned int window2, Index,window1,winStart,j; //change yIdx and xIdx
 
 	// find local point only for xcorr with window
 	if(xIdx < X-1)
 		{
-		for(int i = 0, j = xIdx; xIdx < X-1 - i;j = xIdx, i++) //increment through all PL data points
+		for(winStart = 0, j = xIdx; xIdx < X-1 - winStart; j = xIdx, winStart++) //increment through all PL data points
 			{
 			//		if(xIdx < N-i) //not at end of file
 			//	{
-			Index = corCount - ((X-i) * (X-i - 1))/2; //this needs to be checked
-			winStart = i; //index of the window
+			Index = corCount - ((X-winStart) * (X-winStart - 1))/2; //this needs to be checked
+//			winStart = i; //index of the window
 			window1 = d_PL[winStart].win;
 			sdev1 = d_PL[winStart].sDev;
 			//get pixel values for correlation's Master window
-			if(xIdx < Wsize)
-				window[xIdx] = d_Pixels[window1 + xIdx];
+			if(threadIdx.x < Wsize)
+				window[threadIdx.x] = d_Pixels[window1 + threadIdx.x];
 			__syncthreads();
 
 			//roll through all the data for this window
-			while(j < X-1-i)
+			while(j < X-1-winStart)
 				{
 				window2 = d_PL[winStart+j].win;
 				sdev2 = d_PL[winStart+j].sDev;
@@ -157,6 +157,7 @@ __global__ void XcrossCUDA_same(int* d_Pixels, pixelLoc* d_PL, PixelxCor* d_Cor,
 
 				j += gridDim.x * blockDim.x;
 				}
+			__syncthreads(); //need this so wndow not changed while still in use.
 			}
 		}
 	}
@@ -164,12 +165,12 @@ __global__ void XcrossCUDA_same(int* d_Pixels, pixelLoc* d_PL, PixelxCor* d_Cor,
 
 __global__ void StdDev(int* d_Pixels, pixelLoc* d_PL,  int Wsize, int frames,  int yTotal, twoD numProcThds, int devThres)
 	{
-	int xIdx = blockIdx.x * blockDim.x + threadIdx.x;
-	int yIdx = blockIdx.y * blockDim.y + threadIdx.y;
+	unsigned int xIdx = blockIdx.x * blockDim.x + threadIdx.x;
+	unsigned int yIdx = blockIdx.y * blockDim.y + threadIdx.y;
 
 	float temp, x1=0.f, x2=0.f;
-	int xyStart; //where to start reading the window
-	int outStart;   //output file indexing
+	unsigned int xyStart; //where to start reading the window
+	unsigned int outStart;   //output file indexing
 	if(xIdx < numProcThds.x && yIdx < numProcThds.y)
 		{
 		while(yIdx < yTotal)
@@ -186,16 +187,11 @@ __global__ void StdDev(int* d_Pixels, pixelLoc* d_PL,  int Wsize, int frames,  i
 				x2 += temp * temp; 
 				}
 			temp = sqrtf((x2 - x1*x1/Wsize)/(Wsize-1));
-			if(temp > devThres)
-				{
-				d_PL[outStart].sDev = temp;
 				d_PL[outStart].win = xyStart;
-				}
+			if(temp > devThres)
+				d_PL[outStart].sDev = temp;
 			else
-				{
-				d_PL[outStart].win = -1; 
 				d_PL[outStart].sDev = 0.0f;
-				}
 			yIdx += gridDim.y*blockDim.y;
 			}
 		}
@@ -208,21 +204,21 @@ int main()
 	twoD numProcThds;
 	numProcThds.x = Fx - h_Wsize; 
 	numProcThds.y = Gy*Yt;//X*Y*F;
-	int const imageX = 172;
-	int const imageY = 130;
+	int const imageX = 17;
+	int const imageY = 13;
 	int const totalPixs = imageX * imageY;
-	int const readSize = Fx * totalPixs;
+	int  readSize = Fx * totalPixs;
 	int i = 0,N;
 	int size_file=0;
-	int devThres = 35;
+	
 	int procsrTot = numProcThds.x*numProcThds.y;
-	pixelLoc *PL; //*h_PL = new pixelLoc[readSize];
-	int *Pixels;//*h_Pixels = new int[readSize];
+	pixelLoc *h_PL = new pixelLoc[readSize];
+	int *h_Pixels = new int[readSize];
 	int *m = new int[readSize];
 	int  asd=sizeof(pixelLoc);
-	//pixelLoc *d_PL;
-	//int *d_Pixels; 
-	//PixelxCor *d_Cor;
+	pixelLoc *d_PL;
+	int *d_Pixels; 
+	PixelxCor *d_Cor;
 	int deviceCount;
 
 	cudaGetDeviceCount(&deviceCount);
@@ -245,9 +241,9 @@ int main()
 			(int)devProps.clockRate);
 		}
 	int const gridLimit = devProps.maxGridSize[0];
-	int const thredMax = devProps.maxThreadsPerBlock;
+	int  thredMax = 128; //devProps.maxThreadsPerBlock;
 
-	const dim3 blockSize(Xt, Yt, 1);  //TODO
+	const dim3 blockSize(thredMax, Yt, 1);  //TODO
 	const dim3 gridSize(((Fx-1)/thredMax)+1,Gy, 1);  //TODO
 	//int Tot_NumThreads;
 	//int BlockWidth;
@@ -255,28 +251,33 @@ int main()
 	//second = BlockWidth;//threads per block
 
 	int frames = Fx;
-	FILE* file;
-	file = fopen("c:/data/file_name20.txt", "r");
-	if(file == 0)
-		{
-		printf("bad file name\n");
-		exit(0);
-		}
+
+	std::ifstream fin("c:/data/file_.bin", std::ios::binary);
+	fin.read(reinterpret_cast<char*>(h_Pixels), sizeof(int) * readSize);
+	fin.close();
+
+	//FILE* file;
+	//file = fopen("c:/data/file_name20.txt", "r");
+	//if(file == 0)
+	//	{
+	//	printf("bad file name\n");
+	//	exit(0);
+	//	}
 	float temp;int ib=0;
 
-		while (!feof (file))
-//	for(int i = 0; i < readSize; i++)
-		{  
-		fscanf(file, "%E", &temp);
-		h_Pixels[ib++] = int(temp);
-		size_file++;
-		}
+//		while (!feof (file))
+////	for(int i = 0; i < readSize; i++)
+//		{  
+//		fscanf(file, "%E", &temp);
+//		h_Pixels[ib++] = int(temp);
+//		size_file++;
+//		}
 	int yTotal;
 //	readSize = size_file;
 	//   std::ofstream fout("c:/data/file_.bin", std::ios::binary);
 	//      fout.write(reinterpret_cast<char*>(h_Pixels), sizeof(int) * readSize);
 	//fout.close();
-
+	//readSize = size_file;
 	//std::ifstream fin("c:/data/file_.bin", std::ios::binary);
 	//fin.read(reinterpret_cast<char*>(h_Pixels), sizeof(int) * readSize);
 	//fin.close();
@@ -293,15 +294,18 @@ int main()
 		}
 	temp = 0;
 
+	size_file = Fx * 5000;
+//	readSize = Fx * 5000;
+
 //cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * readSize);
 //	cudaMemset((void*) d_PL, 0, sizeof(pixelLoc) * readSize);
 //	checkCudaErrors(cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize));
 
-	cudaMallocManaged((void**) &PL, sizeof(pixelLoc) * Fx);
-	cudaMemset((void*) d_PL, 0, sizeof(pixelLoc) * Fx);
-	cudaMallocManaged((void**) &Pixels, sizeof(int) * Fx);
+	cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * readSize);
+	cudaMemset((void*) d_PL, 0, sizeof(pixelLoc) * readSize);
+	cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize);
 
-//	checkCudaErrors(cudaMemcpy((void*) d_Pixels, h_Pixels, sizeof(int) * readSize, cudaMemcpyHostToDevice));
+	cudaMemcpy((void*) d_Pixels, h_Pixels, sizeof(int) * readSize, cudaMemcpyHostToDevice);
 
 	StdDev<<<gridSize, blockSize>>>(d_Pixels, d_PL, h_Wsize, frames, totalPixs, numProcThds, devThres);
 
@@ -309,9 +313,9 @@ int main()
 
 
 	cudaDeviceSynchronize(); 
-	checkCudaErrors(cudaGetLastError());
+	cudaGetLastError();
 
-	checkCudaErrors(cudaMemcpy(h_PL, d_PL, sizeof(pixelLoc) * readSize, cudaMemcpyDeviceToHost));
+	cudaMemcpy(h_PL, d_PL, sizeof(pixelLoc) * readSize, cudaMemcpyDeviceToHost);
 
 	//compress list of points, removing points below threshold 
 	int j = 0;
@@ -321,7 +325,7 @@ int main()
 		//	{
 		//	cout<<"std = "<<h_PL[i].sDev<<"   "<<h_PL[i].win<<endl;
 		//	}
-		if(h_PL[i].win > 0)
+		if(h_PL[i].sDev > 0)
 			{
 			h_PL[j++] = h_PL[i];
 			}
@@ -329,22 +333,24 @@ int main()
 	N = j;
 	cudaFree(d_PL);
 	cudaFree(d_Pixels);
-	checkCudaErrors(cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * N));
+	cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * N);
 
-	checkCudaErrors(cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize));
+	cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize);
 	int const N1 = N +1;
 	unsigned int const corSize = N1*(N1-1)/2;
-	PixelxCor *h_Cor;
+	PixelxCor *h_Cor = new PixelxCor[corSize];
+	cudaMalloc((void**) &d_Cor, sizeof(PixelxCor) * corSize);
+
 
 	//use memory on Host for Kernel not Device due to Size of Array
-	checkCudaErrors(cudaHostAlloc((void**)&h_Cor, sizeof(PixelxCor) * corSize, cudaHostAllocMapped));
+	//cudaHostAlloc((void**)&h_Cor, sizeof(PixelxCor) * corSize, cudaHostAllocMapped);
 
 	//get the address for Kernel write to output array
-	checkCudaErrors(cudaHostGetDevicePointer(&d_Cor, h_Cor, 0));
+	//cudaHostGetDevicePointer(&d_Cor, h_Cor, 0);
 
 	//do the regular stuff for passing arrays to Kernel
-	checkCudaErrors(cudaMemcpy((void*) d_Pixels, h_Pixels, sizeof(int) * readSize, cudaMemcpyHostToDevice));
-	checkCudaErrors(cudaMemcpy((void*) d_PL, h_PL, sizeof(pixelLoc) * N, cudaMemcpyHostToDevice));
+	cudaMemcpy((void*) d_Pixels, h_Pixels, sizeof(int) * readSize, cudaMemcpyHostToDevice);
+	cudaMemcpy((void*) d_PL, h_PL, sizeof(pixelLoc) * N, cudaMemcpyHostToDevice);
 
 	//int *Indexing = new int[300000];
 	//for(int idx = 0; idx < N; idx++)
@@ -356,12 +362,12 @@ int main()
 
 	XcrossCUDA_same<<<blocks, thredMax>>>(d_Pixels, d_PL,  d_Cor, N1, corSize, h_Wsize);
 
-	checkCudaErrors(cudaDeviceSynchronize()); 
-	checkCudaErrors(cudaGetLastError());
+	cudaDeviceSynchronize(); 
+	cudaGetLastError();
 	delete[] h_Pixels;
 	cudaFree(d_Pixels);
 
-	//	checkCudaErrors(cudaMemcpy(h_Cor, d_Cor, sizeof(float) * corSize, cudaMemcpyDeviceToHost));
+	cudaMemcpy(h_Cor, d_Cor, sizeof(float) * corSize, cudaMemcpyDeviceToHost);
 
 	//	int ja = 0;
 	//	float *pp = new float[300000];
@@ -391,34 +397,70 @@ int main()
 
 
 		//write out the data to a file
-		FILE *fpw;
-		char filew[512];
-		sprintf(filew,"%s.pair.txt","cor_weights");
-		if ((fpw = fopen(filew,"w"))==NULL)
-			{
-			printf("cannot open file\n");
-			}
+		//FILE *fpw;
+		//char filew[512];
+		//sprintf(filew,"%s.pair.txt","cor_weights");
+		//if ((fpw = fopen(filew,"w"))==NULL)
+		//	{
+		//	printf("cannot open file\n");
+		//	}
 
-		fprintf(fpw, "Pixel No\tNode 1\tNode 2\tScale\n");
-		for(int i = 0; i < corSize; i++)
-			{
-			Floc1 = h_Cor[i].loc_Wind1 % frames;
-			Floc2 = h_Cor[i].loc_Wind2 % frames;
-			Xloc1 = floor((h_Cor[i].loc_Wind1/imageY));
-			Yloc1 = (h_Cor[i].loc_Wind1-Floc1) - (Xloc1*imageY);
-			Xloc1 = Xloc1 + 1;
-			if (~Yloc1)
-				Yloc1=imageX;
-			Xloc2 = floor((h_Cor[i].loc_Wind2-Floc2)/imageY);
-			Yloc2 = (h_Cor[i].loc_Wind2-Floc2) - (Xloc2*imageY);
-			if (~Yloc2)
-				Yloc2=imageX;
-			fprintf(fpw, "%d\t%d\t%d\t%f\n",Xloc2, Yloc2, Floc2, h_Cor[i].loc_corrCoef);
-			}
+		//fprintf(fpw, "Pixel No\tNode 1\tNode 2\tScale\n");
+		//for(int i = 0; i < corSize; i++)
+		//	{
+		//	Floc1 = h_Cor[i].loc_Wind1 % frames;
+		//	Floc2 = h_Cor[i].loc_Wind2 % frames;
+		//	Xloc1 = floor((h_Cor[i].loc_Wind1/imageY));
+		//	Yloc1 = (h_Cor[i].loc_Wind1-Floc1) - (Xloc1*imageY);
+		//	Xloc1 = Xloc1 + 1;
+		//	if (~Yloc1)
+		//		Yloc1=imageX;
+		//	Xloc2 = floor((h_Cor[i].loc_Wind2-Floc2)/imageY);
+		//	Yloc2 = (h_Cor[i].loc_Wind2-Floc2) - (Xloc2*imageY);
+		//	if (~Yloc2)
+		//		Yloc2=imageX;
+		//	fprintf(fpw, "%d\t%d\t%d\t%f\n",Xloc2, Yloc2, Floc2, h_Cor[i].loc_corrCoef);
+		//	}
+	FILE *fpw;
+	char filew[512];
+	sprintf(filew,"%s.pair.txt","cor_weights");
+	if ((fpw = fopen(filew,"w"))==NULL)
+	{
+		printf("cannot open file\n");
+	}
+		fprintf(fpw, "Pt#1\tFrm#\t\Pt#2\t\Frm#\tXcorr\n");
+	for(int i = 0; i < corSize; i++)
+	{
+		Floc1 = h_Cor[i].loc_Wind1 % frames;
+		Floc2 = h_Cor[i].loc_Wind2 % frames;
+		Yloc1 = (h_Cor[i].loc_Wind1-Floc1)/frames;//floor((h_Cor[i].loc_Wind1/imageY));
+		Yloc2 = (h_Cor[i].loc_Wind2-Floc2)/frames;
+		//Xloc1 = Yloc1%imageX;
+		//Yloc1 = (Yloc1 - Xloc1)/imageX;
+		//Xloc2 = Yloc2%imageX;
+		//Yloc2 = (Yloc2 - Xloc2)/imageX;
+		//Xloc1 += 1;
+		//Xloc2 += 1;
+		Yloc1 += 1;
+		Yloc2 += 1;
+		//if (~Yloc1)
+		//	Yloc1=imageX;
+		//Xloc2 = floor((h_Cor[i].loc_Wind2-Floc2)/imageY);
+		//Yloc2 = (h_Cor[i].loc_Wind2-Floc2) - (Xloc2*imageY);
+		fprintf(fpw, "%d\t%d\t%d\t%d\t%f\n",Yloc1, Floc1,Yloc2, Floc2, h_Cor[i].loc_corrCoef);
+		//if (~Yloc2)
+		//	Yloc2=imageX;
+		//		fprintf(fpw, "%d\t%d\t%d\t%d\t%f\n",Yloc1, Floc1,Yloc2, Floc2, h_Cor[i].loc_corrCoef);
+		//		printf("%d\t%d\t%d\t%d\t%f\n",Yloc1, Floc1,Yloc2, Floc2, h_Cor[i].loc_corrCoef);
+		//		fprintf(fpw, "%d\t%d\t%d\t%d\t%d\t%d\t%f\n",Xloc1, Yloc1, Floc1, Xloc2, Yloc2, Floc2, h_Cor[i].loc_corrCoef);
+		//		fprintf(fpw, "Pt1(x,y,f) = %d,%d,%d Pt2(x,y,f) = %d,%d,%d Xcorr = %f\n",Xloc1, Yloc1, Floc1, Xloc2, Yloc2, Floc2, h_Cor[i].loc_corrCoef);
+	}
 
 		fclose(fpw);
-		cudaFreeHost(h_Cor);
+//		cudaFreeHost(h_Cor);
 		cudaFree(d_PL);
+		cudaFree(d_Cor);
 		delete[] h_PL;
+		delete[] h_Cor;
 		return 0;
 	}
