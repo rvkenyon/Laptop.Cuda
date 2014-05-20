@@ -221,6 +221,7 @@ int main()
 	PixelxCor *d_Cor;
 	int deviceCount;
 
+	cudaSetDeviceFlags(cudaDeviceMapHost);
 	cudaGetDeviceCount(&deviceCount);
 	if (deviceCount == 0) 
 		{
@@ -338,15 +339,15 @@ int main()
 	cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize);
 	int const N1 = N +1;
 	unsigned int const corSize = N1*(N1-1)/2;
-	PixelxCor *h_Cor = new PixelxCor[corSize];
-	cudaMalloc((void**) &d_Cor, sizeof(PixelxCor) * corSize);
+	PixelxCor *h_Cor;// = new PixelxCor[corSize];
+//	cudaMalloc((void**) &d_Cor, sizeof(PixelxCor) * corSize);
 
 
 	//use memory on Host for Kernel not Device due to Size of Array
-	//cudaHostAlloc((void**)&h_Cor, sizeof(PixelxCor) * corSize, cudaHostAllocMapped);
+	cudaHostAlloc((void**)&h_Cor, sizeof(PixelxCor) * corSize, cudaHostAllocMapped);
 
 	//get the address for Kernel write to output array
-	//cudaHostGetDevicePointer(&d_Cor, h_Cor, 0);
+	cudaHostGetDevicePointer(&d_Cor, h_Cor, 0);
 
 	//do the regular stuff for passing arrays to Kernel
 	cudaMemcpy((void*) d_Pixels, h_Pixels, sizeof(int) * readSize, cudaMemcpyHostToDevice);
@@ -367,7 +368,7 @@ int main()
 	delete[] h_Pixels;
 	cudaFree(d_Pixels);
 
-	cudaMemcpy(h_Cor, d_Cor, sizeof(float) * corSize, cudaMemcpyDeviceToHost);
+	//cudaMemcpy(h_Cor, d_Cor, sizeof(float) * corSize, cudaMemcpyDeviceToHost);
 
 	//	int ja = 0;
 	//	float *pp = new float[300000];
@@ -457,10 +458,10 @@ int main()
 	}
 
 		fclose(fpw);
-//		cudaFreeHost(h_Cor);
+		cudaFreeHost(h_Cor);
 		cudaFree(d_PL);
-		cudaFree(d_Cor);
+//		cudaFree(d_Cor);
 		delete[] h_PL;
-		delete[] h_Cor;
+//		delete[] h_Cor;
 		return 0;
 	}
