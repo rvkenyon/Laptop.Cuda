@@ -202,26 +202,35 @@ int main()
 	{
 	int const count = Fx*Gy*Yt; //Fx=MaxX, Gy * Yt = maxY for data file
 	twoD numProcThds;
-	numProcThds.x = Fx - h_Wsize; 
-	numProcThds.y = Gy*Yt;//X*Y*F;
-	int const imageX = 17;
-	int const imageY = 13;
-	int const totalPixs = imageX * imageY;
-	int  readSize = Fx * totalPixs;
+	numProcThds.x = Fx - h_Wsize; //used in Stdev kernel for total number threads X direction
+	numProcThds.y = Gy*Yt; //used in Stdev kernel for total number threads Y direction
+	int const imageX = 17; //size of Image used ... columns
+	int const imageY = 13*5; //size of Image used ... rows
+	int const totalPixs = imageX * imageY; //total pixel number for image
+	int  readSize = Fx * totalPixs; //total memory size of all data
 	int i = 0,N;
 	int size_file=0;
+	int Xloc1, Yloc1, Floc1; //used for X,Y,Frame for Point 1
+	int Xloc2, Yloc2, Floc2; //used for X,Y,Frame for Point 2
+
 	
 	int procsrTot = numProcThds.x*numProcThds.y;
-	pixelLoc *h_PL = new pixelLoc[readSize];
-	int *h_Pixels = new int[readSize];
-	int *m = new int[readSize];
+	pixelLoc *h_PL = new pixelLoc[readSize]; //used to hold Stdev values
+	int *h_Pixels = new int[readSize]; //used to hold pixel values
 	int  asd=sizeof(pixelLoc);
-	pixelLoc *d_PL;
-	int *d_Pixels; 
-	PixelxCor *d_Cor;
+	pixelLoc *d_PL; //device version of h_PL
+	int *d_Pixels;  //device version of h_Pixels
+	PixelxCor *d_Cor;  //device version of h_Cor
 	int deviceCount;
+	int frames = Fx;
+	int yTotal;
+	int dev = 0;
 
+	//this MUST be here; flags must be set before any
+	//Cuda calls made; if Host Memory use by Device is used!!
 	cudaSetDeviceFlags(cudaDeviceMapHost);
+
+
 	cudaGetDeviceCount(&deviceCount);
 	if (deviceCount == 0) 
 		{
@@ -229,7 +238,6 @@ int main()
 		exit(EXIT_FAILURE);
 		}
 
-	int dev = 0;
 	cudaSetDevice(dev);
 
 	cudaDeviceProp devProps;
@@ -251,8 +259,7 @@ int main()
 	//first = Tot_NumThreads/BlockWidth;
 	//second = BlockWidth;//threads per block
 
-	int frames = Fx;
-
+	//read a binary file of data
 	std::ifstream fin("c:/data/file_.bin", std::ios::binary);
 	fin.read(reinterpret_cast<char*>(h_Pixels), sizeof(int) * readSize);
 	fin.close();
@@ -264,8 +271,6 @@ int main()
 	//	printf("bad file name\n");
 	//	exit(0);
 	//	}
-	float temp;int ib=0;
-
 //		while (!feof (file))
 ////	for(int i = 0; i < readSize; i++)
 //		{  
@@ -273,7 +278,7 @@ int main()
 //		h_Pixels[ib++] = int(temp);
 //		size_file++;
 //		}
-	int yTotal;
+
 //	readSize = size_file;
 	//   std::ofstream fout("c:/data/file_.bin", std::ios::binary);
 	//      fout.write(reinterpret_cast<char*>(h_Pixels), sizeof(int) * readSize);
@@ -293,29 +298,26 @@ int main()
 		{
 		cout<<h_Pixels[i]<<endl;
 		}
-	temp = 0;
 
-	size_file = Fx * 5000;
+//	size_file = Fx * 5000;
 //	readSize = Fx * 5000;
 
 //cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * readSize);
 //	cudaMemset((void*) d_PL, 0, sizeof(pixelLoc) * readSize);
 //	checkCudaErrors(cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize));
 
+	//allocate memory space and copy data to device
 	cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * readSize);
 	cudaMemset((void*) d_PL, 0, sizeof(pixelLoc) * readSize);
 	cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize);
-
 	cudaMemcpy((void*) d_Pixels, h_Pixels, sizeof(int) * readSize, cudaMemcpyHostToDevice);
 
+	//run kernel for finding Standard Deviation of data
 	StdDev<<<gridSize, blockSize>>>(d_Pixels, d_PL, h_Wsize, frames, totalPixs, numProcThds, devThres);
 
-	//rearrange the Loc file for xcorr in next cuda function
-
-
+	//wait for all to finish and copy data to host
 	cudaDeviceSynchronize(); 
 	cudaGetLastError();
-
 	cudaMemcpy(h_PL, d_PL, sizeof(pixelLoc) * readSize, cudaMemcpyDeviceToHost);
 
 	//compress list of points, removing points below threshold 
@@ -332,16 +334,15 @@ int main()
 			}
 		}
 	N = j;
+//	cudaFree(d_Pixels);
+//	cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize);
 	cudaFree(d_PL);
-	cudaFree(d_Pixels);
 	cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * N);
 
-	cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize);
 	int const N1 = N +1;
 	unsigned int const corSize = N1*(N1-1)/2;
 	PixelxCor *h_Cor;// = new PixelxCor[corSize];
 //	cudaMalloc((void**) &d_Cor, sizeof(PixelxCor) * corSize);
-
 
 	//use memory on Host for Kernel not Device due to Size of Array
 	cudaHostAlloc((void**)&h_Cor, sizeof(PixelxCor) * corSize, cudaHostAllocMapped);
@@ -350,7 +351,7 @@ int main()
 	cudaHostGetDevicePointer(&d_Cor, h_Cor, 0);
 
 	//do the regular stuff for passing arrays to Kernel
-	cudaMemcpy((void*) d_Pixels, h_Pixels, sizeof(int) * readSize, cudaMemcpyHostToDevice);
+//	cudaMemcpy((void*) d_Pixels, h_Pixels, sizeof(int) * readSize, cudaMemcpyHostToDevice);
 	cudaMemcpy((void*) d_PL, h_PL, sizeof(pixelLoc) * N, cudaMemcpyHostToDevice);
 
 	//int *Indexing = new int[300000];
@@ -391,12 +392,6 @@ int main()
 	//}
 	//	cout<<ja<<endl;
 
-
-	int Xloc1, Yloc1, Floc1;
-	int Xloc2, Yloc2, Floc2;
-
-
-
 		//write out the data to a file
 		//FILE *fpw;
 		//char filew[512];
@@ -434,7 +429,7 @@ int main()
 	{
 		Floc1 = h_Cor[i].loc_Wind1 % frames;
 		Floc2 = h_Cor[i].loc_Wind2 % frames;
-		Yloc1 = (h_Cor[i].loc_Wind1-Floc1)/frames;//floor((h_Cor[i].loc_Wind1/imageY));
+		Yloc1 = (h_Cor[i].loc_Wind1-Floc1)/frames;
 		Yloc2 = (h_Cor[i].loc_Wind2-Floc2)/frames;
 		//Xloc1 = Yloc1%imageX;
 		//Yloc1 = (Yloc1 - Xloc1)/imageX;
@@ -458,10 +453,10 @@ int main()
 	}
 
 		fclose(fpw);
+//		delete[] h_Cor;
+//		cudaFree(d_Cor);
 		cudaFreeHost(h_Cor);
 		cudaFree(d_PL);
-//		cudaFree(d_Cor);
 		delete[] h_PL;
-//		delete[] h_Cor;
 		return 0;
 	}
