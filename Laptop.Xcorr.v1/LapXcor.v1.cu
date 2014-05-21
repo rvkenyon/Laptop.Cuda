@@ -443,6 +443,8 @@ int main()
 		//	Yloc1=imageX;
 		//Xloc2 = floor((h_Cor[i].loc_Wind2-Floc2)/imageY);
 		//Yloc2 = (h_Cor[i].loc_Wind2-Floc2) - (Xloc2*imageY);
+
+		if(Floc1 == Floc2)
 		fprintf(fpw, "%d\t%d\t%d\t%d\t%f\n",Yloc1, Floc1,Yloc2, Floc2, h_Cor[i].loc_corrCoef);
 		//if (~Yloc2)
 		//	Yloc2=imageX;
