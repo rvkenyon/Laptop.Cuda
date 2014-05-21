@@ -1,4 +1,5 @@
 //#define WIN32 1
+#define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
 
 #include <fstream>
 #include <iostream>
@@ -107,6 +108,16 @@ using namespace std;
 //	} // end of finding windows inside pixel silo
 //}
 
+static void HandleError( cudaError_t err, const char *file, int line ) {
+	if (err != cudaSuccess) 
+		{
+		cerr<<cudaGetErrorString( err )<<" in "<<file<<" at line "<<line<<endl;
+//		printf( "%s in %s at line %d\n", cudaGetErrorString( err ), file, line );
+		exit( EXIT_FAILURE );
+		}
+	}
+
+
 //this where thread acts on the same window to Xcorr
 __global__ void XcrossCUDA_same(int* d_Pixels, pixelLoc* d_PL, PixelxCor* d_Cor, int X, int corCount, int Wsize)
 	{
@@ -123,13 +134,14 @@ __global__ void XcrossCUDA_same(int* d_Pixels, pixelLoc* d_PL, PixelxCor* d_Cor,
 		{
 		for(winStart = 0, j = xIdx; xIdx < X-1 - winStart; j = xIdx, winStart++) //increment through all PL data points
 			{
+			__syncthreads(); //need this so wndow not changed while still in use.
 			//		if(xIdx < N-i) //not at end of file
 			//	{
 			Index = corCount - ((X-winStart) * (X-winStart - 1))/2; //this needs to be checked
 			//			winStart = i; //index of the window
 			window1 = d_PL[winStart].win;
 			sdev1 = d_PL[winStart].sDev;
-			//get pixel values for correlation's Master window
+			//get pixel values for correlation's Master window for Block use
 			if(threadIdx.x == 0)
 				{
 				for(int ib = 0; ib < h_Wsize; ib++)
@@ -162,7 +174,6 @@ __global__ void XcrossCUDA_same(int* d_Pixels, pixelLoc* d_PL, PixelxCor* d_Cor,
 
 				j += gridDim.x * blockDim.x;
 				}
-			__syncthreads(); //need this so wndow not changed while still in use.
 			}
 		}
 	}
@@ -210,7 +221,7 @@ int main()
 	numProcThds.x = Fx - h_Wsize; //used in Stdev kernel for total number threads X direction
 	numProcThds.y = Gy*Yt; //used in Stdev kernel for total number threads Y direction
 	int const imageX = 17; //size of Image used ... columns
-	int const imageY = 13*5; //size of Image used ... rows
+	int const imageY = 130; //size of Image used ... rows
 	int const totalPixs = imageX * imageY; //total pixel number for image
 	int  readSize = Fx * totalPixs; //total memory size of all data
 	int i = 0,N;
@@ -230,6 +241,7 @@ int main()
 	int frames = Fx;
 	int yTotal;
 	int dev = 0;
+	cudaError_t  code;
 
 	//this MUST be here; flags must be set before any
 	//Cuda calls made; if Host Memory use by Device is used!!
@@ -312,18 +324,23 @@ int main()
 	//	checkCudaErrors(cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize));
 
 	//allocate memory space and copy data to device
-	cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * readSize);
-	cudaMemset((void*) d_PL, 0, sizeof(pixelLoc) * readSize);
-	cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize);
-	cudaMemcpy((void*) d_Pixels, h_Pixels, sizeof(int) * readSize, cudaMemcpyHostToDevice);
+	HANDLE_ERROR(cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * readSize));
+	//	cudaMemset((void*) d_PL, 0, sizeof(pixelLoc) * readSize);
+	HANDLE_ERROR(cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize));
+	HANDLE_ERROR(cudaMemcpy((void*) d_Pixels, h_Pixels, sizeof(int) * readSize, cudaMemcpyHostToDevice));
 
 	//run kernel for finding Standard Deviation of data
 	StdDev<<<gridSize, blockSize>>>(d_Pixels, d_PL, h_Wsize, frames, totalPixs, numProcThds, devThres);
 
 	//wait for all to finish and copy data to host
 	cudaDeviceSynchronize(); 
-	cudaGetLastError();
-	cudaMemcpy(h_PL, d_PL, sizeof(pixelLoc) * readSize, cudaMemcpyDeviceToHost);
+	//	cudaGetLastError();
+	code = cudaGetLastError();
+	if (code != cudaSuccess) 
+		printf ("Cuda error -- %s\n", cudaGetErrorString(code)); 
+
+
+	HANDLE_ERROR(cudaMemcpy(h_PL, d_PL, sizeof(pixelLoc) * readSize, cudaMemcpyDeviceToHost));
 
 	//compress list of points, removing points below threshold 
 	int j = 0;
@@ -342,35 +359,40 @@ int main()
 	//	cudaFree(d_Pixels);
 	//	cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize);
 	cudaFree(d_PL);
-	cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * N);
+	PixelxCor *h_Cor;// = new PixelxCor[corSize];
+
+	HANDLE_ERROR(cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * N));
+	//	cudaMalloc((void**) &d_Cor, sizeof(PixelxCor) * corSize);
 
 	int const N1 = N +1;
 	unsigned int const corSize = N1*(N1-1)/2;
-	PixelxCor *h_Cor;// = new PixelxCor[corSize];
-	//	cudaMalloc((void**) &d_Cor, sizeof(PixelxCor) * corSize);
+	int  blocks = (N+thredMax-1)/thredMax;
+	if(blocks > gridLimit) blocks = gridLimit;
 
-	//use memory on Host for Kernel not Device due to Size of Array
-	cudaHostAlloc((void**)&h_Cor, sizeof(PixelxCor) * corSize, cudaHostAllocMapped);
-
-	//get the address for Kernel write to output array
-	cudaHostGetDevicePointer(&d_Cor, h_Cor, 0);
 
 	//do the regular stuff for passing arrays to Kernel
 	//	cudaMemcpy((void*) d_Pixels, h_Pixels, sizeof(int) * readSize, cudaMemcpyHostToDevice);
-	cudaMemcpy((void*) d_PL, h_PL, sizeof(pixelLoc) * N, cudaMemcpyHostToDevice);
+	HANDLE_ERROR(cudaMemcpy((void*) d_PL, h_PL, sizeof(pixelLoc) * N, cudaMemcpyHostToDevice));
 
 	//int *Indexing = new int[300000];
 	//for(int idx = 0; idx < N; idx++)
 	//	Indexing[idx] = corSize - ((N1-idx) * (N1-idx - 1))/2; //this needs to be checked
 
+	//use memory on Host for Kernel not Device due to Size of Array
+	HANDLE_ERROR(cudaHostAlloc((void**)&h_Cor, sizeof(PixelxCor) * corSize, cudaHostAllocMapped));
+
+	//get the address for Kernel write to output array
+	HANDLE_ERROR(cudaHostGetDevicePointer(&d_Cor, h_Cor, 0));
+
 	//now do xcorrelation
-	int  blocks = (N+thredMax-1)/thredMax;
-	if(blocks > gridLimit) blocks = gridLimit;
 
 	XcrossCUDA_same<<<blocks, thredMax>>>(d_Pixels, d_PL,  d_Cor, N1, corSize, h_Wsize);
 
 	cudaDeviceSynchronize(); 
-	cudaGetLastError();
+	code = cudaGetLastError();
+	if (code != cudaSuccess) 
+		printf ("Cuda error -- %s\n", cudaGetErrorString(code)); 
+
 	delete[] h_Pixels;
 	cudaFree(d_Pixels);
 
@@ -429,7 +451,7 @@ int main()
 		{
 		printf("cannot open file\n");
 		}
-//	fprintf(fpw, "Pt#1\tFrm#\t\Pt#2\t\Frm#\tXcorr\n");
+	//	fprintf(fpw, "Pt#1\tFrm#\t\Pt#2\t\Frm#\tXcorr\n");
 	fprintf(fpw, "Frm#\tPt#1\t\Pt#2\t\Xcorr\n");
 	for(int i = 0; i < corSize; i++)
 		{
