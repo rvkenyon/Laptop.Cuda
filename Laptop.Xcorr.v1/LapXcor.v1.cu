@@ -9,7 +9,7 @@
 #include <cstdio>
 #include <cassert>
 #include <cuda_runtime.h>
- 
+
 
 #define THREADS 512
 //#define Gy 32 //grid y dimension
@@ -126,12 +126,17 @@ __global__ void XcrossCUDA_same(int* d_Pixels, pixelLoc* d_PL, PixelxCor* d_Cor,
 			//		if(xIdx < N-i) //not at end of file
 			//	{
 			Index = corCount - ((X-winStart) * (X-winStart - 1))/2; //this needs to be checked
-//			winStart = i; //index of the window
+			//			winStart = i; //index of the window
 			window1 = d_PL[winStart].win;
 			sdev1 = d_PL[winStart].sDev;
 			//get pixel values for correlation's Master window
-			if(threadIdx.x < Wsize)
-				window[threadIdx.x] = d_Pixels[window1 + threadIdx.x];
+			if(threadIdx.x == 0)
+				{
+				for(int ib = 0; ib < h_Wsize; ib++)
+					window[ib] = d_Pixels[window1 + ib];
+				}
+			//if(threadIdx.x < Wsize)
+			//	window[threadIdx.x] = d_Pixels[window1 + threadIdx.x];
 			__syncthreads();
 
 			//roll through all the data for this window
@@ -187,7 +192,7 @@ __global__ void StdDev(int* d_Pixels, pixelLoc* d_PL,  int Wsize, int frames,  i
 				x2 += temp * temp; 
 				}
 			temp = sqrtf((x2 - x1*x1/Wsize)/(Wsize-1));
-				d_PL[outStart].win = xyStart;
+			d_PL[outStart].win = xyStart;
 			if(temp > devThres)
 				d_PL[outStart].sDev = temp;
 			else
@@ -213,7 +218,7 @@ int main()
 	int Xloc1, Yloc1, Floc1; //used for X,Y,Frame for Point 1
 	int Xloc2, Yloc2, Floc2; //used for X,Y,Frame for Point 2
 
-	
+
 	int procsrTot = numProcThds.x*numProcThds.y;
 	pixelLoc *h_PL = new pixelLoc[readSize]; //used to hold Stdev values
 	int *h_Pixels = new int[readSize]; //used to hold pixel values
@@ -271,15 +276,15 @@ int main()
 	//	printf("bad file name\n");
 	//	exit(0);
 	//	}
-//		while (!feof (file))
-////	for(int i = 0; i < readSize; i++)
-//		{  
-//		fscanf(file, "%E", &temp);
-//		h_Pixels[ib++] = int(temp);
-//		size_file++;
-//		}
+	//		while (!feof (file))
+	////	for(int i = 0; i < readSize; i++)
+	//		{  
+	//		fscanf(file, "%E", &temp);
+	//		h_Pixels[ib++] = int(temp);
+	//		size_file++;
+	//		}
 
-//	readSize = size_file;
+	//	readSize = size_file;
 	//   std::ofstream fout("c:/data/file_.bin", std::ios::binary);
 	//      fout.write(reinterpret_cast<char*>(h_Pixels), sizeof(int) * readSize);
 	//fout.close();
@@ -299,12 +304,12 @@ int main()
 		cout<<h_Pixels[i]<<endl;
 		}
 
-//	size_file = Fx * 5000;
-//	readSize = Fx * 5000;
+	//	size_file = Fx * 5000;
+	//	readSize = Fx * 5000;
 
-//cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * readSize);
-//	cudaMemset((void*) d_PL, 0, sizeof(pixelLoc) * readSize);
-//	checkCudaErrors(cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize));
+	//cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * readSize);
+	//	cudaMemset((void*) d_PL, 0, sizeof(pixelLoc) * readSize);
+	//	checkCudaErrors(cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize));
 
 	//allocate memory space and copy data to device
 	cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * readSize);
@@ -334,15 +339,15 @@ int main()
 			}
 		}
 	N = j;
-//	cudaFree(d_Pixels);
-//	cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize);
+	//	cudaFree(d_Pixels);
+	//	cudaMalloc((void**) &d_Pixels, sizeof(int) * readSize);
 	cudaFree(d_PL);
 	cudaMalloc((void**) &d_PL, sizeof(pixelLoc) * N);
 
 	int const N1 = N +1;
 	unsigned int const corSize = N1*(N1-1)/2;
 	PixelxCor *h_Cor;// = new PixelxCor[corSize];
-//	cudaMalloc((void**) &d_Cor, sizeof(PixelxCor) * corSize);
+	//	cudaMalloc((void**) &d_Cor, sizeof(PixelxCor) * corSize);
 
 	//use memory on Host for Kernel not Device due to Size of Array
 	cudaHostAlloc((void**)&h_Cor, sizeof(PixelxCor) * corSize, cudaHostAllocMapped);
@@ -351,7 +356,7 @@ int main()
 	cudaHostGetDevicePointer(&d_Cor, h_Cor, 0);
 
 	//do the regular stuff for passing arrays to Kernel
-//	cudaMemcpy((void*) d_Pixels, h_Pixels, sizeof(int) * readSize, cudaMemcpyHostToDevice);
+	//	cudaMemcpy((void*) d_Pixels, h_Pixels, sizeof(int) * readSize, cudaMemcpyHostToDevice);
 	cudaMemcpy((void*) d_PL, h_PL, sizeof(pixelLoc) * N, cudaMemcpyHostToDevice);
 
 	//int *Indexing = new int[300000];
@@ -392,41 +397,42 @@ int main()
 	//}
 	//	cout<<ja<<endl;
 
-		//write out the data to a file
-		//FILE *fpw;
-		//char filew[512];
-		//sprintf(filew,"%s.pair.txt","cor_weights");
-		//if ((fpw = fopen(filew,"w"))==NULL)
-		//	{
-		//	printf("cannot open file\n");
-		//	}
+	//write out the data to a file
+	//FILE *fpw;
+	//char filew[512];
+	//sprintf(filew,"%s.pair.txt","cor_weights");
+	//if ((fpw = fopen(filew,"w"))==NULL)
+	//	{
+	//	printf("cannot open file\n");
+	//	}
 
-		//fprintf(fpw, "Pixel No\tNode 1\tNode 2\tScale\n");
-		//for(int i = 0; i < corSize; i++)
-		//	{
-		//	Floc1 = h_Cor[i].loc_Wind1 % frames;
-		//	Floc2 = h_Cor[i].loc_Wind2 % frames;
-		//	Xloc1 = floor((h_Cor[i].loc_Wind1/imageY));
-		//	Yloc1 = (h_Cor[i].loc_Wind1-Floc1) - (Xloc1*imageY);
-		//	Xloc1 = Xloc1 + 1;
-		//	if (~Yloc1)
-		//		Yloc1=imageX;
-		//	Xloc2 = floor((h_Cor[i].loc_Wind2-Floc2)/imageY);
-		//	Yloc2 = (h_Cor[i].loc_Wind2-Floc2) - (Xloc2*imageY);
-		//	if (~Yloc2)
-		//		Yloc2=imageX;
-		//	fprintf(fpw, "%d\t%d\t%d\t%f\n",Xloc2, Yloc2, Floc2, h_Cor[i].loc_corrCoef);
-		//	}
+	//fprintf(fpw, "Pixel No\tNode 1\tNode 2\tScale\n");
+	//for(int i = 0; i < corSize; i++)
+	//	{
+	//	Floc1 = h_Cor[i].loc_Wind1 % frames;
+	//	Floc2 = h_Cor[i].loc_Wind2 % frames;
+	//	Xloc1 = floor((h_Cor[i].loc_Wind1/imageY));
+	//	Yloc1 = (h_Cor[i].loc_Wind1-Floc1) - (Xloc1*imageY);
+	//	Xloc1 = Xloc1 + 1;
+	//	if (~Yloc1)
+	//		Yloc1=imageX;
+	//	Xloc2 = floor((h_Cor[i].loc_Wind2-Floc2)/imageY);
+	//	Yloc2 = (h_Cor[i].loc_Wind2-Floc2) - (Xloc2*imageY);
+	//	if (~Yloc2)
+	//		Yloc2=imageX;
+	//	fprintf(fpw, "%d\t%d\t%d\t%f\n",Xloc2, Yloc2, Floc2, h_Cor[i].loc_corrCoef);
+	//	}
 	FILE *fpw;
 	char filew[512];
 	sprintf(filew,"%s.pair.txt","cor_weights");
 	if ((fpw = fopen(filew,"w"))==NULL)
-	{
+		{
 		printf("cannot open file\n");
-	}
-		fprintf(fpw, "Pt#1\tFrm#\t\Pt#2\t\Frm#\tXcorr\n");
+		}
+//	fprintf(fpw, "Pt#1\tFrm#\t\Pt#2\t\Frm#\tXcorr\n");
+	fprintf(fpw, "Frm#\tPt#1\t\Pt#2\t\Xcorr\n");
 	for(int i = 0; i < corSize; i++)
-	{
+		{
 		Floc1 = h_Cor[i].loc_Wind1 % frames;
 		Floc2 = h_Cor[i].loc_Wind2 % frames;
 		Yloc1 = (h_Cor[i].loc_Wind1-Floc1)/frames;
@@ -445,20 +451,20 @@ int main()
 		//Yloc2 = (h_Cor[i].loc_Wind2-Floc2) - (Xloc2*imageY);
 
 		if(Floc1 == Floc2)
-		fprintf(fpw, "%d\t%d\t%d\t%d\t%f\n",Yloc1, Floc1,Yloc2, Floc2, h_Cor[i].loc_corrCoef);
+			fprintf(fpw, "%d\t%d\t%d\t%f\n",Floc1,Yloc1, Yloc2,  h_Cor[i].loc_corrCoef);
 		//if (~Yloc2)
 		//	Yloc2=imageX;
 		//		fprintf(fpw, "%d\t%d\t%d\t%d\t%f\n",Yloc1, Floc1,Yloc2, Floc2, h_Cor[i].loc_corrCoef);
 		//		printf("%d\t%d\t%d\t%d\t%f\n",Yloc1, Floc1,Yloc2, Floc2, h_Cor[i].loc_corrCoef);
 		//		fprintf(fpw, "%d\t%d\t%d\t%d\t%d\t%d\t%f\n",Xloc1, Yloc1, Floc1, Xloc2, Yloc2, Floc2, h_Cor[i].loc_corrCoef);
 		//		fprintf(fpw, "Pt1(x,y,f) = %d,%d,%d Pt2(x,y,f) = %d,%d,%d Xcorr = %f\n",Xloc1, Yloc1, Floc1, Xloc2, Yloc2, Floc2, h_Cor[i].loc_corrCoef);
-	}
+		}
 
-		fclose(fpw);
-//		delete[] h_Cor;
-//		cudaFree(d_Cor);
-		cudaFreeHost(h_Cor);
-		cudaFree(d_PL);
-		delete[] h_PL;
-		return 0;
+	fclose(fpw);
+	//		delete[] h_Cor;
+	//		cudaFree(d_Cor);
+	cudaFreeHost(h_Cor);
+	cudaFree(d_PL);
+	delete[] h_PL;
+	return 0;
 	}
