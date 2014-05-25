@@ -111,8 +111,8 @@ using namespace std;
 static void HandleError( cudaError_t err, const char *file, int line ) {
 	if (err != cudaSuccess) 
 		{
-		cerr<<cudaGetErrorString( err )<<" in "<<file<<" at line "<<line<<endl;
-//		printf( "%s in %s at line %d\n", cudaGetErrorString( err ), file, line );
+		//		cerr<<cudaGetErrorString( err )<<" in "<<file<<" at line "<<line<<endl;
+		fprintf(stderr, "%s in %s at line %d\n", cudaGetErrorString( err ), file, line );
 		exit( EXIT_FAILURE );
 		}
 	}
@@ -127,7 +127,8 @@ __global__ void XcrossCUDA_same(int* d_Pixels, pixelLoc* d_PL, PixelxCor* d_Cor,
 	unsigned int xIdx = blockIdx.x * blockDim.x + threadIdx.x;
 	float sdev1;
 	float x1, x2, SumPt2, Sum_X1X2, sdev2;
-	unsigned int window2, Index,window1,winStart,j; //change yIdx and xIdx
+	unsigned int window2,window1,winStart;
+	unsigned long int j, Index; //these must be Long since > 32-bit address value
 
 	// find local point only for xcorr with window
 	if(xIdx < X-1)
@@ -221,7 +222,7 @@ int main()
 	numProcThds.x = Fx - h_Wsize; //used in Stdev kernel for total number threads X direction
 	numProcThds.y = Gy*Yt; //used in Stdev kernel for total number threads Y direction
 	int const imageX = 17; //size of Image used ... columns
-	int const imageY = 130; //size of Image used ... rows
+	int const imageY = 13; //size of Image used ... rows
 	int const totalPixs = imageX * imageY; //total pixel number for image
 	int  readSize = Fx * totalPixs; //total memory size of all data
 	int i = 0,N;
@@ -270,31 +271,31 @@ int main()
 	int  thredMax = 128; //devProps.maxThreadsPerBlock;
 
 	const dim3 blockSize(thredMax, Yt, 1);  //TODO
-	const dim3 gridSize(((Fx-1)/thredMax)+1,Gy, 1);  //TODO
+	const dim3 gridSize(((Fx-1)/thredMax)+1,16,1);//Gy, 1);  //TODO
 	//int Tot_NumThreads;
 	//int BlockWidth;
 	//first = Tot_NumThreads/BlockWidth;
 	//second = BlockWidth;//threads per block
 
 	//read a binary file of data
-	std::ifstream fin("c:/data/file_.bin", std::ios::binary);
-	fin.read(reinterpret_cast<char*>(h_Pixels), sizeof(int) * readSize);
-	fin.close();
-
-	//FILE* file;
-	//file = fopen("c:/data/file_name20.txt", "r");
-	//if(file == 0)
-	//	{
-	//	printf("bad file name\n");
-	//	exit(0);
-	//	}
-	//		while (!feof (file))
-	////	for(int i = 0; i < readSize; i++)
-	//		{  
-	//		fscanf(file, "%E", &temp);
-	//		h_Pixels[ib++] = int(temp);
-	//		size_file++;
-	//		}
+	//std::ifstream fin("c:/data/file_.bin", std::ios::binary);
+	//fin.read(reinterpret_cast<char*>(h_Pixels), sizeof(int) * readSize);
+	//fin.close();
+	float temp;
+	FILE* file;
+	file = fopen("c:/data/file_name50.txt", "r");
+	if(file == 0)
+		{
+		printf("bad file name\n");
+		exit(0);
+		}
+	//			while (!feof (file))
+	for(int i = 0; i < readSize; i++)
+		{  
+		fscanf(file, "%E", &temp);
+		h_Pixels[i] = int(temp);
+		size_file++;
+		}
 
 	//	readSize = size_file;
 	//   std::ofstream fout("c:/data/file_.bin", std::ios::binary);
@@ -337,7 +338,7 @@ int main()
 	//	cudaGetLastError();
 	code = cudaGetLastError();
 	if (code != cudaSuccess) 
-		printf ("Cuda error -- %s\n", cudaGetErrorString(code)); 
+		fprintf (stderr,"Cuda error -- %s\n", cudaGetErrorString(code)); 
 
 
 	HANDLE_ERROR(cudaMemcpy(h_PL, d_PL, sizeof(pixelLoc) * readSize, cudaMemcpyDeviceToHost));
@@ -384,19 +385,32 @@ int main()
 	//get the address for Kernel write to output array
 	HANDLE_ERROR(cudaHostGetDevicePointer(&d_Cor, h_Cor, 0));
 
-	//now do xcorrelation
+	if(corSize > maxMemory/sizeof(PixelxCor))
+		{
+		//now do xcorrelation...cycle through w/ max mem per cycle...I need to figure this out.
+		for(int round = 0; round < corSize; round++)
+			{
+			XcrossCUDA_same<<<blocks, thredMax>>>(d_Pixels, d_PL,  d_Cor, N1, corSize, h_Wsize, start_end);
 
-	XcrossCUDA_same<<<blocks, thredMax>>>(d_Pixels, d_PL,  d_Cor, N1, corSize, h_Wsize);
-
+			cudaDeviceSynchronize(); 
+			code = cudaGetLastError();
+			if (code != cudaSuccess) 
+				fprintf (stderr,"Cuda error -- %s\n", cudaGetErrorString(code)); 
+			cudaMemcpy(h_Cor, d_Cor, sizeof(float) * corSize, cudaMemcpyDeviceToHost);
+			//write h_Cor to disk or to other array
+			}
+		}
+	else
+		{
+		XcrossCUDA_same<<<blocks, thredMax>>>(d_Pixels, d_PL,  d_Cor, N1, corSize, h_Wsize);
 	cudaDeviceSynchronize(); 
 	code = cudaGetLastError();
 	if (code != cudaSuccess) 
-		printf ("Cuda error -- %s\n", cudaGetErrorString(code)); 
-
+		fprintf (stderr,"Cuda error -- %s\n", cudaGetErrorString(code)); 
+		}
 	delete[] h_Pixels;
 	cudaFree(d_Pixels);
 
-	//cudaMemcpy(h_Cor, d_Cor, sizeof(float) * corSize, cudaMemcpyDeviceToHost);
 
 	//	int ja = 0;
 	//	float *pp = new float[300000];
@@ -452,7 +466,7 @@ int main()
 		printf("cannot open file\n");
 		}
 	//	fprintf(fpw, "Pt#1\tFrm#\t\Pt#2\t\Frm#\tXcorr\n");
-	fprintf(fpw, "Frm#\tPt#1\t\Pt#2\t\Xcorr\n");
+	fprintf(fpw, "Frame\tPt1\tPt2\tXcorr\n");
 	for(int i = 0; i < corSize; i++)
 		{
 		Floc1 = h_Cor[i].loc_Wind1 % frames;
